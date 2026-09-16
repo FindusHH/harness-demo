@@ -178,6 +178,20 @@ async def demo_observability() -> None:
     # um Traces direkt in der Konsole zu sehen.
     configure_otel_providers()
 
+    console_traces = os.environ.get("ENABLE_CONSOLE_EXPORTERS", "").lower() in {"1", "true", "yes"}
+    if console_traces:
+        print(
+            "\nHinweis: ENABLE_CONSOLE_EXPORTERS ist aktiv - gleich erscheinen\n"
+            "OpenTelemetry-SPANS als JSON-Bloecke in der Konsole. So liest du sie:\n"
+            "  * 'name'          = welcher Schritt (z. B. 'invoke_agent <name>',\n"
+            "                      'chat' fuer den LLM-Aufruf, 'execute_tool get_weather').\n"
+            "  * parent/trace_id = verschachtelte Struktur: der Tool-Span liegt INNERHALB\n"
+            "                      des Agent-Spans -> Beweis, dass der Harness orchestriert.\n"
+            "  * 'attributes'    = Details wie Modellname, Token-Zahlen, Tool-Argumente.\n"
+            "  * start/end time  = Dauer jedes Schritts.\n"
+            "Jeder Span = ein Arbeitsschritt der Harness-Pipeline, nicht nur ein LLM-Call.\n"
+        )
+
     agent = create_harness_agent(
         client=build_chat_client(),
         otel_provider_name="schulung.harness.demo",
@@ -189,8 +203,20 @@ async def demo_observability() -> None:
         "Wie ist das Wetter in Muenchen?",
         session=session,
     )
+    print("\n--- Antwort des Agenten ---")
     print(response.text)
-    print("(Traces werden ueber den konfigurierten OTLP-Exporter emittiert.)")
+    if console_traces:
+        print(
+            "\n--- Deutung ---\n"
+            "Oben siehst du die Span-Baeume: der Tool-Span 'execute_tool get_weather'\n"
+            "haengt unter dem Agent-Span. Genau diese Verschachtelung macht das\n"
+            "'Harnessing' sichtbar - der Harness ruft Modell und Tool koordiniert auf.\n"
+        )
+    else:
+        print(
+            "(Traces werden ueber den konfigurierten OTLP-Exporter emittiert. "
+            "Setze ENABLE_CONSOLE_EXPORTERS=true, um sie hier in der Konsole zu sehen.)"
+        )
 
 
 # --------------------------------------------------------------------------- #
