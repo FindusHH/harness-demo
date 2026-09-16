@@ -1,0 +1,17 @@
+# Microsoft Agent Framework - Harness (Core enthält create_harness_agent)
+agent-framework-core
+
+# Foundry-Chat-Client (Responses API auf einem Foundry-Projekt-Endpoint)
+agent-framework-foundry
+
+# Alternativer Client (OpenAI / Azure OpenAI) fuer lokale Demos ohne Foundry
+agent-framework-openai
+
+# Auth gegen Azure / Foundry
+azure-identity
+
+# Optionaler OTLP-Exporter fuer Observability-Demo (z. B. Aspire Dashboard, Jaeger)
+opentelemetry-exporter-otlp-proto-grpc
+
+# Laedt Konfiguration automatisch aus .env
+python-dotenv
