@@ -1,6 +1,6 @@
 # Schritt für Schritt: einen Harness-Agenten erstellen
 
-Praktische Anleitung – Stand: 2026-09-16
+Praktische Anleitung – Stand: 2026-09-17
 
 > **Hinweis zu den Fachbegriffen:** Die Begriffe *Harnessing*, *Agent Harness* und *Harness*
 > werden bewusst in ihrer englischen Originalform verwendet, weil es keine etablierte deutsche
@@ -275,7 +275,10 @@ async def run_with_approval():
                 continue
             answer = input(f"Freigeben? {request.function_call.name} [j/N] > ").strip().lower()
             approved = answer in {"j", "ja", "y", "yes"}
-            new_inputs.append(Message(role="assistant", contents=[request]))
+            # Nur die Freigabe-ANTWORT zuruecksenden. Die Zwischenschicht hat die
+            # urspruengliche Anfrage bereits in der Sitzung gespeichert und bindet
+            # die Antwort selbst daran. Die Anfrage NICHT erneut als assistant-Message
+            # mitschicken (siehe Hinweis unten).
             new_inputs.append(Message(
                 role="user",
                 contents=[request.to_function_approval_response(approved)],
@@ -289,6 +292,23 @@ Der Harness aktiviert dafür standardmäßig eine **Freigabe-Zwischenschicht** (
 *middleware*), die den Werkzeugaufruf abfängt, bereits erteilte Freigaben anwendet und offene
 Fälle als `user_input_requests` zurückgibt. Wichtig: Die Freigabe braucht über alle Runden
 hinweg **dieselbe Sitzung**, sonst geht der Bezug zum ursprünglichen Aufruf verloren.
+
+> **Session-basiert vs. zustandslos – ein wichtiger Unterschied.** Die Microsoft-Learn-Doku zeigt
+> in ihren *zustandslosen* Beispielen (ohne Sitzung) ein Muster, bei dem man in jeder Runde den
+> **gesamten** Kontext erneut sendet: die ursprüngliche Anweisung, die Anfrage als
+> `Message(role="assistant", contents=[request])` **und** die Freigabe-Antwort. Das ist nötig,
+> weil ohne Sitzung („thread") kein Zustand gespeichert wird (O-Ton der Doku: *„When we don't have
+> a thread, we need to ensure we include the original query, the approval request, and the approval
+> response in each iteration."*).
+>
+> **Hier** arbeiten wir aber **mit** einer Sitzung – und zusätzlich mit dem Foundry-Client, der den
+> Gesprächsverlauf **serverseitig** hält. Dann darf man die Anfrage **nicht** noch einmal als
+> `assistant`-Message einspeisen: Sie steckt bereits im serverseitigen Verlauf, und ein erneutes
+> Einspeisen erzeugt einen doppelten Werkzeugaufruf ohne passendes Ergebnis
+> (`BadRequestError: No tool output found for function call`). Es genügt – und ist korrekt –, nur
+> die **Freigabe-Antwort** zu senden; die Zwischenschicht bindet sie an die in der Sitzung
+> gespeicherte Anfrage. Für den Session-Fall verweist die Doku auf das Beispiel
+> `function_tool_with_approval_and_sessions.py`.
 
 Dokumentation: <https://learn.microsoft.com/agent-framework/agents/tools/tool-approval>
 
@@ -355,7 +375,7 @@ Dokumentation: <https://learn.microsoft.com/agent-framework/agents/observability
 
 ```bash
 # Mit Foundry:
-export FOUNDRY_PROJECT_ENDPOINT="https://<ressource>.ai.azure.com/api/projects/<projekt>"
+export FOUNDRY_PROJECT_ENDPOINT="https://<ressource>.services.ai.azure.com/api/projects/<projekt>"
 export FOUNDRY_MODEL="gpt-4o"
 az login
 

@@ -1,6 +1,6 @@
 # Agent Harnessing mit Python und Microsoft Foundry
 
-Schulungsunterlage – Stand: 2026-09-15
+Schulungsunterlage – Stand: 2026-09-17
 
 > **Hinweis zu den Fachbegriffen:** Die Begriffe *Harnessing*, *Agent Harness* und *Harness*
 > werden bewusst in ihrer englischen Originalform verwendet, weil es keine etablierte deutsche
@@ -209,6 +209,11 @@ sowohl `max_context_window_tokens` (maximale Größe des Kontextfensters) als au
 `max_output_tokens` (maximale Antwortlänge) gesetzt sind. Dann greift die Standardstrategie
 `ContextWindowCompactionStrategy` für die Vorher- und die Nachher-Phase.
 
+> **Hinweis:** Das Verdichtungs-Framework ist in Python derzeit **experimentell**; die
+> Verdichtungstypen werden aus `agent_framework` importiert. Die Funktion `create_harness_agent`
+> selbst ist bereits freigegeben – experimentell sind darüber hinaus noch Hintergrund-Agenten,
+> Dateizugriff und die Wiederholungsschleife.
+
 | Strategie (Python) | Wie stark gekürzt wird | Erhalt des Kontexts | Braucht das Modell | Am besten geeignet für |
 |---|---|---|---|---|
 | `ToolResultCompactionStrategy` | gering | hoch | nein | umfangreiche Werkzeug-Ausgaben verdichten |
@@ -234,6 +239,13 @@ Bestätigung ausgeführt werden. Dieses Muster heißt „Mensch in der Schleife"
 - Die Zwischenschicht benötigt über alle Freigaberunden hinweg dieselbe **Sitzung**.
 - Mit `disable_tool_auto_approval=True` entfernt man nur das automatische Freigabeverhalten – die
   grundsätzliche Freigabepflicht des Werkzeugs bleibt bestehen.
+- **Wichtig beim Zurücksenden der Freigabe:** Mit einer Sitzung (und erst recht mit dem
+  Foundry-Client, der den Verlauf serverseitig hält) sendet man nur die **Freigabe-Antwort**
+  (`to_function_approval_response(True/False)`) in einer neuen `user`-Nachricht zurück. Die
+  ursprüngliche Anfrage darf **nicht** erneut als `assistant`-Nachricht eingespeist werden – sie
+  steckt bereits im gespeicherten Verlauf, und ein erneutes Einspeisen erzeugt einen doppelten
+  Werkzeugaufruf ohne Ergebnis. Nur in den *zustandslosen* Doku-Beispielen (ohne Sitzung) wird der
+  gesamte Kontext inklusive Anfrage in jeder Runde erneut mitgeschickt.
 
 Dokumentation: <https://learn.microsoft.com/agent-framework/agents/tools/tool-approval>
 
@@ -309,7 +321,7 @@ from agent_framework.foundry import FoundryChatClient
 from azure.identity import AzureCliCredential
 
 client = FoundryChatClient(
-    project_endpoint="https://<ressource>.ai.azure.com/api/projects/<projekt>",
+    project_endpoint="https://<ressource>.services.ai.azure.com/api/projects/<projekt>",
     model="gpt-4o",
     credential=AzureCliCredential(),
 )
@@ -469,7 +481,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # Client konfigurieren – mit Foundry:
-export FOUNDRY_PROJECT_ENDPOINT="https://<ressource>.ai.azure.com/api/projects/<projekt>"
+export FOUNDRY_PROJECT_ENDPOINT="https://<ressource>.services.ai.azure.com/api/projects/<projekt>"
 export FOUNDRY_MODEL="gpt-4o"
 az login
 
@@ -489,9 +501,11 @@ Die Stufen `approval` und `planning` veranschaulichen zwei Kern-Zusammenhänge a
 
 - **`approval`** – Ein mit `@tool(approval_mode="always_require")` markiertes Werkzeug
   (`book_hotel`) löst die Freigabe-Zwischenschicht aus. Der Aufruf endet zunächst mit einer
-  Freigabeanfrage (`result.user_input_requests`). Erst nach der Antwort
-  `to_function_approval_response(True/False)` und der Übergabe derselben Sitzung führt der Harness
-  das Werkzeug aus.
+  Freigabeanfrage (`result.user_input_requests`). Man sendet dann **nur** die Antwort
+  `to_function_approval_response(True/False)` in einer neuen `user`-Nachricht mit **derselben
+  Sitzung** zurück; erst danach führt der Harness das Werkzeug aus. Die Anfrage selbst wird nicht
+  erneut eingespeist – die Zwischenschicht bindet die Antwort an die in der Sitzung gespeicherte
+  Anfrage.
 - **`planning`** – Aufgabenliste und die Modi Planen/Ausführen sind im Harness standardmäßig aktiv.
   Eine mehrstufige Aufgabe wird geplant, in Aufgaben zerlegt und mit Werkzeugen abgearbeitet.
 

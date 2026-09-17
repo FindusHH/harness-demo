@@ -1,0 +1,1 @@
+Plan zur Hotelbuchung in München (3 Nächte): benötigte Klärungen, Vorgehen und Freigabeprozess.
