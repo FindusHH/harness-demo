@@ -46,7 +46,31 @@ Statt all diese Bausteine selbst zusammenzubauen, liefert das **Microsoft Agent 
 fertigen Harness mit sinnvollen Voreinstellungen. Man gibt lediglich einen **Chat-Client** vor
 (die Verbindung zum Sprachmodell) und schaltet die benötigten Fähigkeiten hinzu.
 
-Quelle: <https://learn.microsoft.com/agent-framework/concepts/harness>
+### Wozu dient Harnessing? Ziele im Überblick
+
+Ein blankes Sprachmodell beherrscht nur eine einzelne Frage-Antwort-Runde. Der Harness umschließt
+den Chat-Client mit genau der Infrastruktur, die für **lange, mehrstufige Aufgaben** (Recherche,
+Programmierung, Datenanalyse) nötig ist. Er verfolgt dabei diese Ziele:
+
+- **Aus dem Modell einen handlungsfähigen Agenten machen** – Planung, Werkzeugnutzung und das
+  eigenständige Abarbeiten mehrstufiger Aufgaben, statt nur Text zu erzeugen.
+- **Integrationsaufwand senken** – der Ansatz ist „batteries-included": Man liefert nur einen
+  Chat-Client und passt bloß die Fähigkeiten an, die die Anwendung wirklich braucht. Planung,
+  Aufgabenlisten (Todos), Kontextverdichtung (englisch *compaction*), Datei-Gedächtnis, Freigaben
+  und Nachverfolgbarkeit sind bereits eingebaut.
+- **Verhalten vereinheitlichen und verlässlich machen** – dieselbe Orchestrierung (Modell- und
+  Werkzeugaufrufe steuern, Zustand/Kontext verwalten, Freigaberegeln anwenden, den Agenten durch
+  die Aufgabe *treiben*) wirkt über alle Anwendungen hinweg gleich.
+- **Kompatibel bleiben** – das Ergebnis ist ein ganz normaler Agent (in Python das von
+  `create_harness_agent` zurückgegebene `Agent`-Objekt), der dieselben Sitzungs- und
+  Kontext-Bausteine nutzt wie jeder andere Agent.
+
+> Zitat aus der Microsoft-Learn-Dokumentation: *„Agent Framework provides an opinionated,
+> batteries-included Harness for research, coding, data analysis, and other long-running work. You
+> provide a chat client and customize only the capabilities your application needs."*
+
+Quelle: <https://learn.microsoft.com/agent-framework/concepts/harness>,
+<https://learn.microsoft.com/agent-framework/get-started/harness>
 
 ---
 

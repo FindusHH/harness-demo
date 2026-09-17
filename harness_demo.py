@@ -79,29 +79,39 @@ except ImportError:
 # 1. Chat-Client auswaehlen (Foundry bevorzugt, sonst OpenAI)
 # --------------------------------------------------------------------------- #
 def build_chat_client():
-    """Erzeugt einen Chat-Client abhaengig von den gesetzten Umgebungsvariablen.
+    """Erzeugt den Chat-Client, den der Harness spaeter umschliesst.
 
-    Rueckgabe ist ein Client, den der Harness umschliesst. Der Harness selbst
-    ist client-agnostisch - dieselbe Harness-Konfiguration funktioniert mit
-    Foundry, Azure OpenAI oder OpenAI.
+    Der Chat-Client ist die konkrete Verbindung zum Sprachmodell. Der Harness
+    selbst ist *client-agnostisch*: Dieselbe Harness-Konfiguration laeuft
+    unveraendert mit Foundry, Azure OpenAI oder OpenAI. Genau deshalb wird die
+    Client-Wahl hier an EINER Stelle gekapselt - der restliche Democode muss den
+    Unterschied nicht kennen.
     """
     foundry_endpoint = os.environ.get("FOUNDRY_PROJECT_ENDPOINT")
     if foundry_endpoint:
-        # Foundry-Projekt-Endpoint ueber die Responses API.
+        # Bevorzugter Weg: FoundryChatClient spricht das Foundry-Projekt ueber die
+        # *Responses API* an (der von Foundry empfohlene Inferenz-Pfad).
         from agent_framework.foundry import FoundryChatClient
         from azure.identity import AzureCliCredential
 
         return FoundryChatClient(
+            # Endpoint-Format: https://<res>.services.ai.azure.com/api/projects/<proj>
             project_endpoint=foundry_endpoint,
+            # "model" ist der Name des Modell-*Deployments* in Foundry.
             model=os.environ.get("FOUNDRY_MODEL", "gpt-4o"),
+            # AzureCliCredential nutzt das Token aus "az login". Die angemeldete
+            # Identitaet braucht die RBAC-Rolle "Azure AI Developer" auf der
+            # Foundry-Ressource, sonst antwortet der Dienst mit HTTP 403.
             credential=AzureCliCredential(),
         )
 
     if os.environ.get("OPENAI_API_KEY"):
+        # Fallback ohne Azure/Foundry: reiner OpenAI-Client (nur API-Key noetig).
         from agent_framework.openai import OpenAIChatClient
 
         return OpenAIChatClient(model=os.environ.get("OPENAI_MODEL", "gpt-4o"))
 
+    # Ohne einen der beiden Wege gibt es kein Modell -> der Agent kann nicht laufen.
     raise SystemExit(
         "Kein Client konfiguriert.\n"
         "Setze entweder FOUNDRY_PROJECT_ENDPOINT (+ az login) "
@@ -112,6 +122,13 @@ def build_chat_client():
 # --------------------------------------------------------------------------- #
 # 2. Function Tools (werden vom Harness automatisch aufgerufen)
 # --------------------------------------------------------------------------- #
+# Ein "Function Tool" ist eine ganz normale Python-Funktion, die der Agent bei
+# Bedarf aufrufen darf. Der Dekorator @tool macht die Funktion als Werkzeug
+# kenntlich: Aus Signatur, den Annotated[...]-Typannotationen und dem Docstring
+# leitet er automatisch das Tool-Schema ab, das dem Modell praesentiert wird. Die
+# Annotated-Beschreibungen erklaeren dem Modell den Zweck jedes Parameters. Der
+# Harness entscheidet anhand des Prompts selbst, welches Tool er wann aufruft, und
+# speist dessen Rueckgabewert wieder in den Verlauf ein.
 @tool
 def get_weather(
     city: Annotated[str, "Name der Stadt, z. B. 'Amsterdam'"],
@@ -138,6 +155,10 @@ def convert_currency(
     return f"{amount:.2f} EUR = {amount * rate:.2f} {target.upper()}"
 
 
+# approval_mode="always_require" markiert dieses Tool als *freigabepflichtig*:
+# Der Harness fuehrt es NICHT sofort aus, sondern haelt an und fragt zuerst einen
+# Menschen (Human-in-the-Loop, siehe demo_approval). Ohne diese Angabe gilt der
+# Standard "never_require", d. h. das Tool laeuft ohne Rueckfrage.
 @tool(approval_mode="always_require")
 def book_hotel(
     city: Annotated[str, "Stadt fuer die Buchung"],
@@ -147,6 +168,10 @@ def book_hotel(
     return f"Hotel in {city} fuer {nights} Naechte gebucht. Buchungsnr.: DEMO-{abs(hash((city, nights))) % 10000:04d}"
 
 
+# Absichtlich fehlerhaftes Tool: Es wirft eine Ausnahme, damit demo_observability
+# --fail-tool zeigen kann, wie ein fehlgeschlagener Schritt im Ablaufbaum als
+# [!! BLOCKIERT/FEHLER] erscheint und der Harness die Ausnahme sauber abfaengt,
+# statt abzustuerzen.
 @tool
 def get_weather_unstable(
     city: Annotated[str, "Name der Stadt, z. B. 'Muenchen'"],
@@ -160,11 +185,20 @@ def get_weather_unstable(
 # --------------------------------------------------------------------------- #
 async def demo_minimal() -> None:
     print("== Demo 1: Minimaler Harness ==")
+    # create_harness_agent ist die Fabrikfunktion des Agent Frameworks. Schon mit
+    # nur einem Client liefert sie einen voll ausgestatteten Agenten: Chat-Pipeline,
+    # Sitzungs-/Verlaufsverwaltung, Todo-/Plan-Infrastruktur, Freigabe-Middleware und
+    # Observability sind bereits verdrahtet - hier laeuft alles mit Standardwerten.
     agent = create_harness_agent(client=build_chat_client())
 
+    # Die Session ist der rote Faden: Sie speichert Verlauf, Plan und Todos und muss
+    # bei jedem agent.run(...) mitgegeben werden, damit der Agent seinen Zustand ueber
+    # mehrere Aufrufe hinweg behaelt.
     session = agent.create_session()
     prompt = "Plane ein Wochenende in Seattle in drei Stichpunkten."
     print(f"\n>> Prompt an den Agenten:\n   \"{prompt}\"\n")
+    # agent.run(...) ist asynchron und durchlaeuft die komplette Harness-Schleife
+    # (Kontext bauen -> Modell fragen -> ggf. Tools -> Antwort zusammenbauen).
     response = await agent.run(prompt, session=session)
     print("--- Antwort des Agenten ---")
     print(response.text)
@@ -175,6 +209,10 @@ async def demo_minimal() -> None:
 # --------------------------------------------------------------------------- #
 async def demo_tools() -> None:
     print("== Demo 2: Harness mit Function Tools ==")
+    # Der Harness kennt zwei Ebenen von Anweisungen:
+    #  - harness_instructions gelten fuer das Geruest insgesamt und stehen VOR den
+    #    agentenspezifischen Anweisungen (allgemeines Arbeits-/Werkzeugverhalten).
+    #  - agent_instructions beschreiben die konkrete Rolle/Persona des Agenten.
     harness_instructions = "Nutze Tools bewusst und berichte nur verifizierte Ergebnisse."
     agent_instructions = "Du bist ein hilfreicher Reise-Assistent."
     agent = create_harness_agent(
@@ -182,8 +220,14 @@ async def demo_tools() -> None:
         name="reise-agent",
         harness_instructions=harness_instructions,
         agent_instructions=agent_instructions,
+        # Beide Tools werden dem Modell angeboten; es waehlt selbst, welche es fuer
+        # die Anfrage tatsaechlich braucht.
         tools=[get_weather, convert_currency],
+        # Sind BEIDE Token-Grenzen gesetzt, aktiviert der Harness die *Compaction*
+        # (Verdichtung): Bei langen Verlaeufen kuerzt er aeltere Teile automatisch,
+        # um Kontextfenster, Kosten und Antwortzeit im Griff zu behalten.
         max_context_window_tokens=128_000,
+        # Obergrenze fuer die Laenge der Modellantwort.
         max_output_tokens=16_384,
     )
 
@@ -202,7 +246,13 @@ async def demo_tools() -> None:
 # Demo 3: Harness mit Observability (OpenTelemetry)
 # --------------------------------------------------------------------------- #
 def _classify_span(name: str) -> tuple[str, str]:
-    """Ordnet einen technischen Span-Namen einer verstaendlichen Rolle + Erklaerung zu."""
+    """Uebersetzt einen technischen Span-Namen in Rolle + laienverstaendliche Erklaerung.
+
+    Das Agent Framework benennt seine Spans nach den OpenTelemetry-GenAI-Konventionen:
+    "invoke_agent <name>" (Agent-Lauf, oberster Span), "chat <modell>" (Modell-Aufruf)
+    und "execute_tool <funktion>" (Tool-Aufruf). Diese Rohnamen mappen wir hier auf
+    verstaendliche Etiketten fuer den Ablaufbaum.
+    """
     lower = (name or "").lower()
     if "invoke_agent" in lower or ("agent" in lower and "run" in lower):
         return ("AGENT-LAUF", "Der Harness nimmt deine Anfrage an und steuert den gesamten Ablauf.")
@@ -214,16 +264,24 @@ def _classify_span(name: str) -> tuple[str, str]:
 
 
 def _span_details(attributes: dict) -> list[str]:
-    """Zieht die fuer Laien interessanten Werte aus den Span-Attributen."""
+    """Zieht die fuer Laien interessanten Werte aus den Span-Attributen.
+
+    Die Schluessel folgen den OpenTelemetry-GenAI-Konventionen (gen_ai.*). Je nach
+    Framework-Version koennen einzelne Attribute fehlen, deshalb wird jeder Wert
+    defensiv mit .get(...) gelesen und nur bei Vorhandensein ausgegeben.
+    """
     a = dict(attributes or {})
     out: list[str] = []
+    # Welches Modell hat geantwortet (bzw. wurde angefragt)?
     model = a.get("gen_ai.response.model") or a.get("gen_ai.request.model")
     if model:
         out.append(f"Modell: {model}")
+    # Token-Verbrauch = Grundlage fuer Kosten- und Kontext-Betrachtungen.
     in_tok = a.get("gen_ai.usage.input_tokens")
     out_tok = a.get("gen_ai.usage.output_tokens")
     if in_tok is not None or out_tok is not None:
         out.append(f"Tokens (Eingabe/Ausgabe): {in_tok}/{out_tok}")
+    # Bei Tool-Spans: welche Funktion wurde mit welchen Argumenten aufgerufen?
     tool = a.get("gen_ai.tool.name") or a.get("tool.name")
     if tool:
         out.append(f"Funktion: {tool}")
@@ -234,12 +292,20 @@ def _span_details(attributes: dict) -> list[str]:
 
 
 def _render_harness_trace(spans: list) -> None:
-    """Rendert die gesammelten Spans als verstaendlichen, verschachtelten Ablaufbaum."""
+    """Rendert die gesammelten Spans als verstaendlichen, verschachtelten Ablaufbaum.
+
+    OpenTelemetry liefert die Spans als flache Liste. Jeder Span kennt aber die ID
+    seines Eltern-Spans, sodass sich daraus die Baumstruktur rekonstruieren laesst
+    (welcher Schritt lief INNERHALB welches anderen). Genau diese Verschachtelung
+    macht die Koordinationsarbeit des Harness sichtbar.
+    """
     if not spans:
         print("(Keine Ablaufdaten erfasst - OpenTelemetry-SDK evtl. nicht aktiv.)")
         return
 
+    # Nachschlage-Index: Span-ID -> Span, um Eltern schnell zu finden.
     by_id = {s.context.span_id: s for s in spans}
+    # Kinder nach Eltern-ID gruppieren (Schluessel None = Wurzel-Ebene).
     children: dict = {}
     for s in spans:
         parent_id = s.parent.span_id if s.parent else None
@@ -247,12 +313,15 @@ def _render_harness_trace(spans: list) -> None:
         if parent_id is not None and parent_id not in by_id:
             parent_id = None
         children.setdefault(parent_id, []).append(s)
+    # Geschwister je Ebene chronologisch nach Startzeit ordnen.
     for group in children.values():
         group.sort(key=lambda s: s.start_time)
 
+    # Fortlaufende Schritt-Nummer ueber alle Ebenen (per dict, damit walk sie mutieren kann).
     step_counter = {"n": 0}
 
     def walk(span, depth: int) -> None:
+        # Rekursiv: erst diesen Span ausgeben, dann seine Kinder (eingerueckt).
         step_counter["n"] += 1
         role, meaning = _classify_span(span.name)
         # Todo-/Plan-Tools klarer benennen (Funktionsname steht in den Attributen).
@@ -265,7 +334,7 @@ def _render_harness_trace(spans: list) -> None:
         indent = "    " * depth
         connector = "" if depth == 0 else "└─ "
 
-        # Status ermitteln: OK, oder blockiert/fehlgeschlagen.
+        # Status ermitteln: OK, oder blockiert/fehlgeschlagen (OTel-Status ERROR).
         status = getattr(span, "status", None)
         status_name = getattr(getattr(status, "status_code", None), "name", "") or ""
         blocked = status_name == "ERROR"
@@ -291,6 +360,7 @@ def _render_harness_trace(spans: list) -> None:
         for child in children.get(span.context.span_id, []):
             walk(child, depth + 1)
 
+    # Von jeder Wurzel (Schluessel None) aus den Baum aufbauen.
     for root in children.get(None, []):
         walk(root, 0)
 
@@ -312,10 +382,17 @@ def _setup_span_capture():
             InMemorySpanExporter,
         )
 
+        # InMemorySpanExporter sammelt die Spans im Speicher, damit wir sie nach dem
+        # Lauf selbst auslesen und als Baum rendern koennen (statt sie zu versenden).
         exporter = InMemorySpanExporter()
+        # WICHTIG: Ohne uebergebene Exporter legt configure_otel_providers KEINEN
+        # TracerProvider an -> es wuerden gar keine Spans erfasst. Daher explizit
+        # unseren In-Memory-Exporter durchreichen.
         configure_otel_providers(exporters=[exporter])
         return exporter, _otel_trace
     except ImportError:
+        # Kein OTel-SDK installiert -> Framework trotzdem initialisieren, aber ohne
+        # Erfassung (der Ablaufbaum bleibt dann leer).
         configure_otel_providers()
         return None, None
 
@@ -325,13 +402,18 @@ def _collect_spans(exporter, otel_trace) -> list:
     if exporter is None:
         return []
     provider = otel_trace.get_tracer_provider()
+    # Vor dem Auslesen erzwingen, dass alle noch gepufferten Spans exportiert sind.
     if hasattr(provider, "force_flush"):
         provider.force_flush()
     return list(exporter.get_finished_spans())
 
 
 def _print_todo_list(session) -> None:
-    """Zeigt die Todo-Liste, die der Harness in der Session gefuehrt hat."""
+    """Zeigt die Todo-Liste, die der Harness in der Session gefuehrt hat.
+
+    Der Harness legt Plan und Todos im Session-Zustand ab (session.state["todo"]["items"]).
+    Wir lesen sie defensiv aus, da bei einfachen Aufgaben gar keine Todos entstehen.
+    """
     state = getattr(session, "state", None)
     todo_state = state.get("todo") if isinstance(state, dict) else None
     items = todo_state.get("items") if isinstance(todo_state, dict) else None
@@ -368,6 +450,8 @@ async def demo_observability(fail_tool: bool = False) -> None:
 
     agent = create_harness_agent(
         client=build_chat_client(),
+        # otel_provider_name ist nur das Label, unter dem die Harness-Spans erscheinen;
+        # es konfiguriert KEINEN Exporter/kein Ziel (das erledigt _setup_span_capture).
         otel_provider_name="schulung.harness.demo",
         tools=[get_weather_unstable if fail_tool else get_weather],
     )
@@ -443,10 +527,14 @@ async def demo_interactive() -> None:
         "Leere Eingabe oder 'exit' beendet die Demo.\n"
     )
 
+    # Endlosschleife: liest Eingaben, bis der Nutzer abbricht. Entscheidend ist, dass
+    # DIESELBE session ueber alle Runden verwendet wird - nur so bleibt der Verlauf
+    # erhalten und Rueckbezuege funktionieren.
     while True:
         try:
             user_input = input("Du > ").strip()
         except (EOFError, KeyboardInterrupt):
+            # Ctrl+C / Ctrl+Z beenden die Demo sauber statt mit Traceback.
             print("\nBeendet.")
             break
 
@@ -482,15 +570,21 @@ async def demo_approval() -> None:
     print(f">> Prompt an den Agenten:\n   \"{query}\"\n")
     current_input: str | list = query
 
+    # Freigabe-Schleife: agent.run kann pausieren und um Freigabe(n) bitten, statt
+    # sofort fertig zu antworten. Wir laufen so lange, bis keine Freigabe mehr aussteht.
     while True:
         result = await agent.run(current_input, session=session)
 
+        # Kein user_input_requests -> der Agent ist fertig und liefert die Endantwort.
+        # Andernfalls hat der Harness VOR der Tool-Ausfuehrung angehalten und fragt nach.
         if not result.user_input_requests:
             print(f"Agent > {result.text}")
             break
 
+        # Es koennen mehrere Freigaben gleichzeitig anstehen - jede einzeln behandeln.
         new_inputs: list = []
         for request in result.user_input_requests:
+            # Uns interessieren nur Freigabe-Anfragen zu Function-Calls.
             if request.function_call is None:
                 continue
             print(f"\n[Freigabe erforderlich] Tool: {request.function_call.name}")
